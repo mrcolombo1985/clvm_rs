@@ -6,9 +6,9 @@ import sys
 import os
 import time
 import random
-from clvm import KEYWORD_FROM_ATOM, KEYWORD_TO_ATOM
+from clvm import KEYWORD_FROM_ATOM, KEYWORD_TO_ATOM, SExp
 from clvm.operators import OP_REWRITE
-from clvm_rs import deserialize_and_run_program, STRICT_MODE
+from clvm_rs import deserialize_run_and_convert, STRICT_MODE
 from colorama import init, Fore, Style
 
 init()
@@ -195,7 +195,7 @@ for n in range(5):
             env_data = bytes.fromhex(open(env_fn, 'r').read())
 
             time_start = time.perf_counter()
-            cost, result = deserialize_and_run_program(
+            cost, result = deserialize_run_and_convert(
                 program_data,
                 env_data,
                 KEYWORD_TO_ATOM["q"][0],
@@ -203,6 +203,7 @@ for n in range(5):
                 native_opcode_names_by_opcode,
                 max_cost,
                 flags,
+                to_python=SExp.to
             )
             time_end = time.perf_counter()
 

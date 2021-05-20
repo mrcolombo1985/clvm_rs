@@ -5,8 +5,8 @@ import glob
 import time
 import sys
 import platform
-from clvm_rs import deserialize_and_run_program, STRICT_MODE
-from clvm import KEYWORD_FROM_ATOM, KEYWORD_TO_ATOM
+from clvm_rs import deserialize_run_and_convert, STRICT_MODE
+from clvm import KEYWORD_FROM_ATOM, KEYWORD_TO_ATOM, SExp
 from clvm.operators import OP_REWRITE
 from clvm.EvalError import EvalError
 from colorama import init, Fore, Style
@@ -26,7 +26,7 @@ for fn in glob.glob('programs/large-atom-*.hex.invalid'):
         program_data = bytes.fromhex(open(fn, 'r').read())
         max_cost = 11000000000
 
-        cost, result = deserialize_and_run_program(
+        cost, result = deserialize_run_and_convert(
             program_data,
             bytes.fromhex("ff80"),
             KEYWORD_TO_ATOM["q"][0],
@@ -34,6 +34,7 @@ for fn in glob.glob('programs/large-atom-*.hex.invalid'):
             native_opcode_names_by_opcode,
             max_cost,
             0,
+            to_python=SExp.to
         )
         ret = 1
         print("FAILED: expected parse failure")
