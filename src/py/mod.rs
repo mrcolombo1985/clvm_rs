@@ -1,5 +1,6 @@
 pub mod api;
 pub mod arc_allocator;
+pub mod arena;
 pub mod f_table;
 pub mod glue;
 pub mod native_op_lookup;

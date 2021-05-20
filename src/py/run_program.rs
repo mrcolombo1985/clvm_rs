@@ -1,18 +1,20 @@
 use std::collections::HashMap;
 
+use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyDict};
+
 use crate::allocator::Allocator;
 use crate::cost::Cost;
 use crate::err_utils::err;
 use crate::int_allocator::IntAllocator;
 use crate::more_ops::op_unknown;
 use crate::node::Node;
-use crate::py::f_table::{f_lookup_for_hashmap, FLookup};
-use crate::reduction::Response;
+use crate::reduction::{Reduction, Response};
 use crate::run_program::{run_program, OperatorHandler};
 use crate::serialize::{node_from_bytes, node_to_bytes, serialized_length_from_bytes};
 
-use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use super::arena::Arena;
+use super::f_table::{f_lookup_for_hashmap, FLookup};
 
 pub const STRICT_MODE: u32 = 1;
 
@@ -45,71 +47,10 @@ impl<A: Allocator> OperatorHandler<A> for OperatorHandlerWithMode<A> {
     }
 }
 
-#[pyfunction]
-pub fn serialize_and_run_program(
-    py: Python,
-    program: &[u8],
-    args: &[u8],
-    quote_kw: u8,
-    apply_kw: u8,
-    max_cost: Cost,
-    flags: u32,
-) -> PyResult<(Cost, Py<PyBytes>)> {
-    let mut opcode_lookup_by_name = HashMap::<String, Vec<u8>>::new();
-    for (v, s) in [
-        (4, "op_if"),
-        (5, "op_cons"),
-        (6, "op_first"),
-        (7, "op_rest"),
-        (8, "op_listp"),
-        (9, "op_raise"),
-        (10, "op_eq"),
-        (11, "op_sha256"),
-        (12, "op_add"),
-        (13, "op_subtract"),
-        (14, "op_multiply"),
-        (15, "op_divmod"),
-        (16, "op_substr"),
-        (17, "op_strlen"),
-        (18, "op_point_add"),
-        (19, "op_pubkey_for_exp"),
-        (20, "op_concat"),
-        (22, "op_gr"),
-        (23, "op_gr_bytes"),
-        (24, "op_logand"),
-        (25, "op_logior"),
-        (26, "op_logxor"),
-        (27, "op_lognot"),
-        (28, "op_ash"),
-        (29, "op_lsh"),
-        (30, "op_not"),
-        (31, "op_any"),
-        (32, "op_all"),
-        (33, "op_softfork"),
-        (34, "op_div"),
-    ]
-    .iter()
-    {
-        let v: Vec<u8> = vec![*v as u8];
-        opcode_lookup_by_name.insert(s.to_string(), v);
-    }
-
-    deserialize_and_run_program(
-        py,
-        program,
-        args,
-        quote_kw,
-        apply_kw,
-        opcode_lookup_by_name,
-        max_cost,
-        flags,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
-#[pyfunction]
-pub fn deserialize_and_run_program(
+pub fn deserialize_and_run(
     py: Python,
+    allocator: &mut IntAllocator,
     program: &[u8],
     args: &[u8],
     quote_kw: u8,
@@ -117,35 +58,23 @@ pub fn deserialize_and_run_program(
     opcode_lookup_by_name: HashMap<String, Vec<u8>>,
     max_cost: Cost,
     flags: u32,
-) -> PyResult<(Cost, Py<PyBytes>)> {
-    let mut allocator = IntAllocator::new();
+) -> PyResult<Reduction<i32>> {
     let f_lookup = f_lookup_for_hashmap(opcode_lookup_by_name);
     let strict: bool = (flags & STRICT_MODE) != 0;
     let f: Box<dyn OperatorHandler<IntAllocator> + Send> =
         Box::new(OperatorHandlerWithMode { f_lookup, strict });
-    let program = node_from_bytes(&mut allocator, program)?;
-    let args = node_from_bytes(&mut allocator, args)?;
+    let program = node_from_bytes(allocator, program)?;
+    let args = node_from_bytes(allocator, args)?;
 
     let r = py.allow_threads(|| {
         run_program(
-            &mut allocator,
-            &program,
-            &args,
-            quote_kw,
-            apply_kw,
-            max_cost,
-            f,
-            None,
+            allocator, &program, &args, quote_kw, apply_kw, max_cost, f, None,
         )
     });
     match r {
-        Ok(reduction) => {
-            let node_as_blob = node_to_bytes(&Node::new(&allocator, reduction.1))?;
-            let node_as_bytes: Py<PyBytes> = PyBytes::new(py, &node_as_blob).into();
-            Ok((reduction.0, node_as_bytes))
-        }
+        Ok(reduction) => Ok(reduction),
         Err(eval_err) => {
-            let node_as_blob = node_to_bytes(&Node::new(&allocator, eval_err.0))?;
+            let node_as_blob = node_to_bytes(&Node::new(allocator, eval_err.0))?;
             let msg = eval_err.1;
             let ctx: &PyDict = PyDict::new(py);
             ctx.set_item("msg", msg)?;
@@ -163,10 +92,74 @@ raise EvalError(msg, sexp)",
             );
             match r {
                 Err(x) => Err(x),
-                Ok(_) => Ok((0, PyBytes::new(py, &[]).into())),
+                Ok(_) => panic!("err expected"),
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+pub fn deserialize_run_and_convert(
+    py: Python,
+    program: &[u8],
+    args: &[u8],
+    quote_kw: u8,
+    apply_kw: u8,
+    opcode_lookup_by_name: HashMap<String, Vec<u8>>,
+    max_cost: Cost,
+    flags: u32,
+    to_python: &PyAny,
+) -> PyResult<(Cost, PyObject)> {
+    let arena = Arena::new(py, to_python.to_object(py))?;
+    let reduction = {
+        let mut allocator = arena.allocator();
+        deserialize_and_run(
+            py,
+            &mut allocator,
+            program,
+            args,
+            quote_kw,
+            apply_kw,
+            opcode_lookup_by_name,
+            max_cost,
+            flags,
+        )?
+    };
+
+    let obj = arena.obj_for_ptr(py, reduction.1)?;
+    Ok((reduction.0, obj.to_object(py)))
+}
+
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+pub fn deserialize_and_run_program(
+    py: Python,
+    program: &[u8],
+    args: &[u8],
+    quote_kw: u8,
+    apply_kw: u8,
+    opcode_lookup_by_name: HashMap<String, Vec<u8>>,
+    max_cost: Cost,
+    flags: u32,
+) -> PyResult<(Cost, Py<PyBytes>)> {
+    let mut int_allocator = IntAllocator::new();
+    let allocator = &mut int_allocator;
+    let reduction = deserialize_and_run(
+        py,
+        allocator,
+        program,
+        args,
+        quote_kw,
+        apply_kw,
+        opcode_lookup_by_name,
+        max_cost,
+        flags,
+    )?;
+
+    let node_as_blob = node_to_bytes(&Node::new(allocator, reduction.1))?;
+    let node_as_bytes: Py<PyBytes> = PyBytes::new(py, &node_as_blob).into();
+    Ok((reduction.0, node_as_bytes))
 }
 
 #[pyfunction]
