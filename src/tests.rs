@@ -1,10 +1,21 @@
-use super::allocator::Allocator;
-use super::int_allocator::IntAllocator;
+use super::allocator::{Allocator, NodePtr, SExp};
 use super::node::Node;
 use super::serialize::node_from_bytes;
 use super::serialize::node_to_bytes;
 
-fn test_serialize_roundtrip<T: Allocator>(a: &mut T, n: T::Ptr) {
+impl<'a> PartialEq for Node<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.sexp(), other.sexp()) {
+            (SExp::Pair(l0, l1), SExp::Pair(r0, r1)) => {
+                self.with_node(l0) == self.with_node(r0) && self.with_node(l1) == self.with_node(r1)
+            }
+            (SExp::Atom(l0), SExp::Atom(r0)) => self.allocator.buf(&l0) == self.allocator.buf(&r0),
+            _ => false,
+        }
+    }
+}
+
+fn test_serialize_roundtrip(a: &mut Allocator, n: NodePtr) {
     let vec = node_to_bytes(&Node::new(a, n.clone())).unwrap();
     let n0 = node_from_bytes(a, &vec).unwrap();
     let n1 = Node::new(a, n0);
@@ -13,7 +24,7 @@ fn test_serialize_roundtrip<T: Allocator>(a: &mut T, n: T::Ptr) {
 
 #[test]
 fn test_roundtrip() {
-    let mut a = IntAllocator::new();
+    let mut a = Allocator::new();
     let n = a.null();
     test_serialize_roundtrip(&mut a, n);
 
@@ -57,7 +68,7 @@ fn test_roundtrip() {
 
 #[test]
 fn test_serialize_blobs() {
-    let mut a = IntAllocator::new();
+    let mut a = Allocator::new();
 
     // null
     let n = Node::new(&a, a.null());
@@ -91,7 +102,7 @@ fn test_serialize_blobs() {
 
 #[test]
 fn test_serialize_lists() {
-    let mut a = IntAllocator::new();
+    let mut a = Allocator::new();
 
     // null
     let n = a.null();
@@ -131,7 +142,7 @@ fn test_serialize_lists() {
 
 #[test]
 fn test_serialize_tree() {
-    let mut a = IntAllocator::new();
+    let mut a = Allocator::new();
 
     let a1 = a.new_atom(&[1]).unwrap();
     let a2 = a.new_atom(&[2]).unwrap();
@@ -148,7 +159,7 @@ fn test_serialize_tree() {
 }
 
 /*
-fn node_from_hex<'a>(a: &'a IntAllocator, the_hex: &str) -> Node<'a> {
+fn node_from_hex<'a>(a: &'a Allocator, the_hex: &str) -> Node<'a> {
     let mut buffer = Cursor::new(Vec::new());
     buffer.write_all(&hex::decode(the_hex).unwrap()).unwrap();
     Node::new(a, node_from_bytes(a, &buffer.get_ref()).unwrap())
@@ -159,7 +170,7 @@ fn node_to_hex(node: &Node) -> String {
 }
 
 fn do_test_run_program(input_as_hex: &str, expected_as_hex: &str) -> () {
-    let mut a = IntAllocator::new();
+    let mut a = Allocator::new();
     let n = node_from_hex(&a, input_as_hex);
     println!("n = {:?}", n);
     let r = do_run_program(&n, &null);
